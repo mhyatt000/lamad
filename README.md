@@ -58,3 +58,20 @@ Fillet, chamfer, hole, boss, and pattern recognition are planned, and STL
 (mesh) input is planned for every feature; bare `lamad re det` prints the
 current step/stl support table, generated from the same registry the commands
 use.
+
+## Web viewer
+
+`lamad web` runs a build123d script and serves the result in the browser
+viewer straight from memory: no project, no version, no STEP on disk. Each
+`show_object()` part gets its own color (the script's `color=` if given,
+otherwise the export palette) and a visibility checkbox.
+
+```bash
+lamad web examples/stand.py                      # opens http://localhost:8080
+lamad web stand.py --param width=120 --port 9000 # same --param overrides as run
+lamad web stand.py --no-browser --watch          # re-run and refresh on file change
+```
+
+One JSON object (script, params, parts with colors, url) is printed on stdout
+before the server blocks; ctrl-c stops it. `lamad view` still serves recorded
+versions and STEP files.

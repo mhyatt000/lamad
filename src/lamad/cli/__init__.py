@@ -65,12 +65,13 @@ def cli():
 
 # Subcommand modules import emit/fail/note from this module, so they are
 # registered after the helpers above exist.
-from lamad.cli import geom, project, reverse  # noqa: E402
+from lamad.cli import geom, project, reverse, web  # noqa: E402
 
 cli.add_command(project.init)
 cli.add_command(project.run)
 cli.add_command(project.versions)
 cli.add_command(geom.view)
+cli.add_command(web.web)
 cli.add_command(geom.measure)
 cli.add_command(geom.export)
 cli.add_command(reverse.re)

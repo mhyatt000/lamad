@@ -1,14 +1,16 @@
-"""viser web viewer for a STEP assembly. Driven by `lamad view`.
+"""viser web viewer for a STEP assembly or in-memory parts. Driven by `lamad view` and `lamad web`.
 
     lamad view                 # latest recorded version
     lamad view 2               # by version number, or by label
     lamad view parts/x.step    # any STEP file
+    lamad web stand.py         # parts straight from a script, no STEP
 
 Depends only on OCP + viser (no build123d), so it survives whatever the
 project's CAD kernel wrapper happens to be.
 """
 from __future__ import annotations
 
+import contextlib
 import sys
 import time
 from pathlib import Path
@@ -160,87 +162,151 @@ def count_solids(shape) -> int:
     return n
 
 
-def serve(step: Path, tol: float = 0.05, ang: float = 0.3, port: int = 8080,
-          block: bool = True) -> None:
-    """Tessellate `step` and serve it. Blocks until interrupted."""
-    class args:  # noqa: N801 - keeps the body below unchanged
-        pass
-    args.step, args.tol, args.ang, args.port = Path(step), tol, ang, port
+class Scene:
+    """A viser server showing a list of parts, each as its own mesh node.
 
-    print(f"reading {args.step} ...", file=sys.stderr)
-    _doc, parts = load_parts(args.step)
+    `parts` is a list of dicts with keys "name" (unique), "shape" (TopoDS_Shape)
+    and "color" (0-255 RGB tuple, or None to pick from PALETTE by position).
+    `load()` may be called again to swap the parts for new ones; the GUI and
+    the camera framing are rebuilt from the new set.
+    """
 
-    server = viser.ViserServer(port=args.port)
-    server.scene.set_up_direction("+z")
+    def __init__(self, server: viser.ViserServer, title: str, tol: float, ang: float):
+        self.server, self.title, self.tol, self.ang = server, title, tol, ang
+        self.server.scene.set_up_direction("+z")
+        self.handles: dict[str, viser.MeshHandle] = {}
+        self.gui_handles: list = []
+        self.ctr = np.zeros(3)
+        self.size = np.ones(3)
 
-    handles, meta, allv = {}, [], []
-    for i, (nm, shape, rgb) in enumerate(parts):
-        v, f = tessellate(shape, args.tol, args.ang)
-        allv.append(v)
-        # viser works in metres, CAD in millimetres -> scale on the node.
-        handles[nm] = server.scene.add_mesh_simple(
-            f"/{nm}", v, f, color=rgb or PALETTE[i % len(PALETTE)],
-            scale=0.001, side="double",
-        )
-        meta.append((nm, volume_cm3(shape), count_solids(shape), len(f)))
-        print(f"  {nm:<24} {meta[-1][1]:6.1f} cm3  {len(f):>7} tris", file=sys.stderr)
+        @server.on_client_connect
+        def _(client: viser.ClientHandle) -> None:
+            self.frame(client)
 
-    pts = np.concatenate(allv)
-    lo, hi = pts.min(axis=0), pts.max(axis=0)
-    ctr, size = (lo + hi) / 2, hi - lo
+    @property
+    def port(self) -> int:
+        """The port actually bound. viser moves to the next free one when the
+        requested port is taken, so callers must not assume they got it."""
+        return self.server.get_port()
 
-    with server.gui.add_folder("Parts"):
-        for nm, vol, _nsol, _ntri in meta:
-            cb = server.gui.add_checkbox(f"{nm} ({vol:.1f} cm3)", True)
+    def stop(self) -> None:
+        """Shut the server down. viser announces this on stdout; keep that on
+        stderr so stdout stays reserved for structured output."""
+        with contextlib.redirect_stdout(sys.stderr):
+            self.server.stop()
 
-            @cb.on_update
-            def _(event, nm=nm):
-                handles[nm].visible = event.target.value
-
-    with server.gui.add_folder("Display"):
-        opacity = server.gui.add_slider("opacity", 0.1, 1.0, 0.05, 1.0)
-
-        @opacity.on_update
-        def _(_event):
-            for h in handles.values():
-                h.opacity = opacity.value
-
-        wire = server.gui.add_checkbox("wireframe", False)
-
-        @wire.on_update
-        def _(_event):
-            for h in handles.values():
-                h.wireframe = wire.value
-
-        reset = server.gui.add_button("reset view")
-
-        @reset.on_click
-        def _(event):
-            frame(event.client)
-
-    server.gui.add_markdown(
-        f"**{args.step.name}**\n\n"
-        f"{len(parts)} parts &middot; {sum(m[2] for m in meta)} solids &middot; "
-        f"{sum(m[3] for m in meta):,} tris\n\n"
-        f"bbox `{size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f}` mm\n\n"
-        f"total `{sum(m[1] for m in meta):.1f}` cm3"
-    )
-
-    def frame(client: viser.ClientHandle) -> None:
-        d = float(np.linalg.norm(size)) / 1000.0
-        c = ctr / 1000.0
+    def frame(self, client: viser.ClientHandle) -> None:
+        d = float(np.linalg.norm(self.size)) / 1000.0
+        c = self.ctr / 1000.0
         client.camera.position = (c[0] - d * 0.5, c[1] - d, c[2] + d * 0.5)
         client.camera.look_at = tuple(float(x) for x in c)
 
-    @server.on_client_connect
-    def _(client: viser.ClientHandle) -> None:
-        frame(client)
+    def clear(self) -> None:
+        for h in self.handles.values():
+            h.remove()
+        for h in self.gui_handles:
+            h.remove()
+        self.handles, self.gui_handles = {}, []
 
-    print(f"\nserving http://localhost:{args.port}   (ctrl-c to stop)", file=sys.stderr)
-    if not block:
-        return
+    def load(self, parts: list[dict]) -> None:
+        """Tessellate `parts`, add a mesh per part and rebuild the GUI."""
+        self.clear()
+        server, handles, meta, allv = self.server, self.handles, [], []
+        for i, part in enumerate(parts):
+            nm, shape = part["name"], part["shape"]
+            v, f = tessellate(shape, self.tol, self.ang)
+            allv.append(v)
+            # viser works in metres, CAD in millimetres -> scale on the node.
+            handles[nm] = server.scene.add_mesh_simple(
+                f"/{nm}", v, f, color=part.get("color") or PALETTE[i % len(PALETTE)],
+                scale=0.001, side="double",
+            )
+            meta.append((nm, volume_cm3(shape), count_solids(shape), len(f)))
+            print(f"  {nm:<24} {meta[-1][1]:6.1f} cm3  {len(f):>7} tris", file=sys.stderr)
+
+        pts = np.concatenate(allv)
+        lo, hi = pts.min(axis=0), pts.max(axis=0)
+        self.ctr, self.size = (lo + hi) / 2, hi - lo
+
+        with server.gui.add_folder("Parts") as parts_folder:
+            for nm, vol, _nsol, _ntri in meta:
+                cb = server.gui.add_checkbox(f"{nm} ({vol:.1f} cm3)", True)
+
+                @cb.on_update
+                def _(event, nm=nm):
+                    handles[nm].visible = event.target.value
+
+        with server.gui.add_folder("Display") as display_folder:
+            opacity = server.gui.add_slider("opacity", 0.1, 1.0, 0.05, 1.0)
+
+            @opacity.on_update
+            def _(_event):
+                for h in handles.values():
+                    h.opacity = opacity.value
+
+            wire = server.gui.add_checkbox("wireframe", False)
+
+            @wire.on_update
+            def _(_event):
+                for h in handles.values():
+                    h.wireframe = wire.value
+
+            reset = server.gui.add_button("reset view")
+
+            @reset.on_click
+            def _(event):
+                self.frame(event.client)
+
+        size = self.size
+        stats = server.gui.add_markdown(
+            f"**{self.title}**\n\n"
+            f"{len(parts)} parts &middot; {sum(m[2] for m in meta)} solids &middot; "
+            f"{sum(m[3] for m in meta):,} tris\n\n"
+            f"bbox `{size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f}` mm\n\n"
+            f"total `{sum(m[1] for m in meta):.1f}` cm3"
+        )
+        self.gui_handles = [parts_folder, display_folder, stats]
+        for client in server.get_clients().values():
+            self.frame(client)
+
+
+def wait(scene: Scene, poll=None, interval: float = 0.5) -> None:
+    """Block until ctrl-c. With `poll`, call it every `interval` seconds and
+    reload the scene whenever it returns a new parts list (None = no change)."""
     try:
         while True:
-            time.sleep(1.0)
+            time.sleep(interval if poll else 1.0)
+            if poll is not None:
+                parts = poll()
+                if parts is not None:
+                    scene.load(parts)
     except KeyboardInterrupt:
         pass
+
+
+def serve_parts(parts: list[dict], title: str, tol: float = 0.05, ang: float = 0.3,
+                port: int = 8080, block: bool = True, verbose: bool = True,
+                poll=None) -> Scene:
+    """Serve in-memory parts (see `Scene`). Blocks until interrupted unless
+    `block` is False, in which case the live `Scene` is returned so the caller
+    can emit output and then `wait()` on it."""
+    # viser prints its startup banner on stdout whatever `verbose` says; move it
+    # to stderr for callers that keep stdout for structured output.
+    with contextlib.redirect_stdout(sys.stdout if verbose else sys.stderr):
+        server = viser.ViserServer(port=port, verbose=verbose)
+    scene = Scene(server, title, tol, ang)
+    scene.load(parts)
+    print(f"\nserving http://localhost:{scene.port}   (ctrl-c to stop)", file=sys.stderr)
+    if block:
+        wait(scene, poll)
+    return scene
+
+
+def serve(step: Path, tol: float = 0.05, ang: float = 0.3, port: int = 8080,
+          block: bool = True) -> Scene:
+    """Tessellate `step` and serve it. Blocks until interrupted."""
+    step = Path(step)
+    print(f"reading {step} ...", file=sys.stderr)
+    _doc, loaded = load_parts(step)
+    parts = [{"name": nm, "shape": shape, "color": rgb} for nm, shape, rgb in loaded]
+    return serve_parts(parts, step.name, tol=tol, ang=ang, port=port, block=block)
