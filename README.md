@@ -46,9 +46,12 @@ uv sync --extra reverse-engineering   # shapely
 solids, analytic faces, adjacency) and writes labeled views; `lamad re
 compare REFERENCE SCRIPT` checks a trusted build123d script against a
 reference model. Both print one JSON object on stdout, progress on stderr,
-and a JSON error with exit 1 on failure. `compare` never overwrites: it
-writes a new `<script>_compare/` directory (or `--out DIR`), and `--param
-K=V` overrides a script's top-level literals exactly as `lamad run` does.
+and a JSON error with exit 1 on failure. Neither overwrites: `inspect`
+writes a new `<stem>_inspect/` directory next to the reference file and
+`compare` a new `<stem>_compare/` directory next to the script (not in the
+current directory), or `--out DIR`; an existing directory is an error.
+`--param K=V` overrides a script's top-level literals exactly as `lamad run`
+does.
 
 The reference's extension picks the comparison mode, reported as `"mode"` in
 the JSON and in `report.json`:
@@ -59,8 +62,9 @@ the JSON and in `report.json`:
 | `.stl` | `mesh` | Sampled surface distances between the STL and the tessellated script result: `distance_mm.{reference_to_reconstruction, reconstruction_to_reference}.{mean, p95, max}`, `samples_each_direction`, `bounds_mm`, and `volume_mm3` (watertight meshes only). No IoU or missing/extra volumes. | `report.json`, `comparison.png`, `reconstruction.stl`, `script.py` |
 
 ```bash
-lamad re compare part.step part.py                      # solid mode
+lamad re compare part.step part.py                      # solid mode -> part_compare/
 lamad re compare part.step part.py --boolean-tol 1e-5   # OCCT fuzzy tolerance (solid only)
+lamad re compare vendor.step part.py --solids-only      # ignore cosmetic thread surfaces
 lamad re compare scan.stl part.py                       # mesh mode
 lamad re compare scan.stl part.py --tol 0.05 --ang 0.2 --samples 10000
 ```
@@ -69,8 +73,23 @@ Options: `--tol` is the tessellation linear deflection in mm (preview only in
 solid mode; the reconstruction mesh itself in mesh mode), `--ang` the angular
 deflection in radians and `--samples` the surface samples per direction
 (mesh mode only), `--boolean-tol` the OCCT boolean tolerance (solid mode
-only; a warning on stderr says it is ignored for `.stl`), and
+only; a warning on stderr says it is ignored for `.stl`), `--solids-only`
+drops the reference's free faces, shells, and wires (solid mode only), and
 `--no-preview` skips `comparison.png`.
+
+Solid mode wants closed solids on both sides. A reference that also carries
+free faces or shells (vendor STEPs often add cosmetic thread surfaces) is
+refused with a message naming `--solids-only`; with the flag those
+non-solid shapes are dropped before comparing, stderr says how many, and
+the report records `reference.dropped_non_solids`. When OCCT rejects a
+boolean, typically because the reconstruction's faces coincide exactly with
+the reference's (a counterbore floor at the same height, say), `compare`
+retries the operation with OCCT's glue modes (shift, then full) and then
+with ten times `--boolean-tol` as the fuzzy value; the setting that
+succeeded is reported as `difference.boolean_strategy` (`plain`,
+`glue-shift`, `glue-full`, or `fuzzy`). The preview outlines depth steps,
+so a tall feature seen end-on in the top view stays visible against the
+face it stands on.
 
 Mesh-mode distances are deterministic samples to the closest point on the
 other mesh, not a Hausdorff bound; both meshes are chordal approximations,

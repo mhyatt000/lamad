@@ -13,6 +13,10 @@ BG = np.array([247, 247, 247], dtype=np.uint8)
 BLUE = (90, 145, 205)
 MISSING = (220, 65, 100)
 EXTRA = (25, 175, 175)
+# A pixel this many screen units (pixels of depth) in front of a neighbour is a
+# step between surfaces, so it is outlined: a post seen end-on in the top view
+# has the same normal and shade as the face it stands on and would otherwise vanish.
+OUTLINE_STEP = 3.0
 
 
 def mesh(shape, tol):
@@ -72,7 +76,18 @@ def raster(items, cam, size):
             pixels[y0:y1 + 1, x0:x1 + 1][mask] = np.asarray(color) * shade
             region[mask] = z[mask]
             ids[y0:y1 + 1, x0:x1 + 1][mask] = identity
+    outline(pixels, depth)
     return pixels, ids
+
+
+def outline(pixels, depth):
+    """Darken drawn pixels that stand well in front of a 4-neighbour (silhouettes and steps)."""
+    padded = np.pad(depth, 1, constant_values=-np.inf)
+    behind = np.minimum(np.minimum(padded[:-2, 1:-1], padded[2:, 1:-1]),
+                        np.minimum(padded[1:-1, :-2], padded[1:-1, 2:]))
+    drawn = np.isfinite(depth)
+    edge = drawn & (np.where(drawn, depth, 0.0) - behind > OUTLINE_STEP)
+    pixels[edge] = (pixels[edge] * 0.55).astype(np.uint8)
 
 
 def comparison_image(shapes, path, tol=0.1, size=320):

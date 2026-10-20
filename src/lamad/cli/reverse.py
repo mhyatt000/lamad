@@ -37,7 +37,7 @@ def re():
 
 @re.command(name="inspect")
 @click.argument("reference", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--out", type=click.Path(path_type=Path), help="New output directory; default: <reference>_inspect.")
+@click.option("--out", type=click.Path(path_type=Path), help="New output directory; default: <reference dir>/<stem>_inspect/.")
 @click.option("--preview/--no-preview", default=True, help="Write labeled orthographic views.")
 @click.option("--tol", default=0.1, type=click.FloatRange(min=0, min_open=True), show_default=True,
               help="Preview tessellation deflection in mm; does not affect measurements.")
@@ -45,7 +45,7 @@ def inspect_command(reference, out, preview, tol):
     """Describe STEP assembly, solids, analytic faces, and face adjacency."""
     from lamad.core.inspection import inspect_step
     try:
-        with output_directory(out or Path(f"{reference.stem}_inspect")) as (work, final):
+        with output_directory(out or reference.parent / f"{reference.stem}_inspect") as (work, final):
             note("inspecting STEP topology…")
             with quiet_kernel():
                 report, items = inspect_step(reference)
@@ -88,19 +88,31 @@ def _run_script(script, overrides):
     return source, result
 
 
-def _compare_solid(reference, script, overrides, work, final, preview, tol, boolean_tol):
+def _compare_solid(reference, script, overrides, work, final, preview, tol, boolean_tol, solids_only):
     """STEP/BREP reference: OCCT booleans give missing/extra volumes and IoU."""
-    from lamad.core.comparison import compare_shapes
+    from lamad.core.comparison import compare_shapes, drop_non_solids, non_solid_count
     from lamad.core.inspection import shapes
     from lamad.core.step_io import load_shape
     from OCP.TopAbs import TopAbs_SOLID
     note("loading reference and executing reconstruction…")
     with quiet_kernel():
         original = load_shape(reference)
+    dropped = 0
+    if solids_only:
+        original, dropped = drop_non_solids(original)
+        note(f"--solids-only: dropped {dropped} non-solid shape(s) from the reference.")
+        if not shapes(original, TopAbs_SOLID):
+            raise ValueError(f"{reference.name} has no solids once its {dropped} non-solid shape(s) "
+                             "are dropped; use inspect for surface models.")
+    elif non_solid_count(original):
+        raise ValueError(f"{reference.name} holds {non_solid_count(original)} non-solid shape(s) "
+                         "(free faces, shells, or wires) next to its solids; pass --solids-only "
+                         "to drop them and compare the solids.")
     source, result = _run_script(script, overrides)
     note("computing missing and extra material…")
     with quiet_kernel():
         report, geometry = compare_shapes(original, result.shape, boolean_tol)
+    report["reference"]["dropped_non_solids"] = dropped
     report.update(command="compare", status="success", mode="solid",
                   reference_file=str(reference.resolve()), script=str(script.resolve()),
                   params=result.params)
@@ -191,7 +203,7 @@ def _compare_mesh(reference, script, overrides, work, final, preview, tol, ang, 
 @re.command(name="compare")
 @click.argument("reference", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("script", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--out", type=click.Path(path_type=Path), help="New output directory; default: <script>_compare.")
+@click.option("--out", type=click.Path(path_type=Path), help="New output directory; default: <script dir>/<stem>_compare/.")
 @click.option("--param", "params", multiple=True, metavar="K=V", help="Override a script parameter; repeatable.")
 @click.option("--preview/--no-preview", default=True, help="Write aligned views, overlay, and differences.")
 @click.option("--tol", default=0.1, type=click.FloatRange(min=0, min_open=True), show_default=True,
@@ -203,8 +215,12 @@ def _compare_mesh(reference, script, overrides, work, final, preview, tol, ang, 
               help="Mesh mode (.stl): surface samples per direction.")
 @click.option("--boolean-tol", default=1e-6, type=click.FloatRange(min=0, min_open=True), show_default=True,
               help="Solid mode (.step/.brep): OCCT boolean tolerance in mm, not a match threshold.")
+@click.option("--solids-only", is_flag=True,
+              help="Solid mode (.step/.brep): drop free faces, shells, and wires from the reference "
+                   "(e.g. cosmetic thread surfaces) instead of refusing it.")
 @click.pass_context
-def compare_command(ctx, reference, script, out, params, preview, tol, ang, samples, boolean_tol):
+def compare_command(ctx, reference, script, out, params, preview, tol, ang, samples, boolean_tol,
+                    solids_only):
     """Compare a reference model to a trusted build123d script.
 
     A .step/.stp/.brep reference runs in solid mode: OCCT booleans report
@@ -220,12 +236,15 @@ def compare_command(ctx, reference, script, out, params, preview, tol, ang, samp
         mesh_mode = suffix in MESH_SUFFIXES
         if mesh_mode and ctx.get_parameter_source("boolean_tol") is ParameterSource.COMMANDLINE:
             note("warning: --boolean-tol is ignored in mesh mode (.stl reference).")
+        if mesh_mode and solids_only:
+            note("warning: --solids-only is ignored in mesh mode (.stl reference).")
         overrides = _parse_overrides(params)
-        with output_directory(out or Path(f"{script.stem}_compare")) as (work, final):
+        with output_directory(out or script.parent / f"{script.stem}_compare") as (work, final):
             if mesh_mode:
                 report = _compare_mesh(reference, script, overrides, work, final, preview, tol, ang, samples)
             else:
-                report = _compare_solid(reference, script, overrides, work, final, preview, tol, boolean_tol)
+                report = _compare_solid(reference, script, overrides, work, final, preview, tol, boolean_tol,
+                                        solids_only)
             project.write_json(work / "report.json", report)
         emit(report)
     except Exception as exc:
