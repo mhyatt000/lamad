@@ -30,7 +30,8 @@ def output_directory(destination):
 
 @click.group(name="re", cls=HelpGroup)
 def re():
-    """Reverse engineering: inspect STEP topology, compare STEP to a script."""
+    """Reverse engineering: inspect STEP topology, compare STEP to a script, detect features."""
+
 
 
 @re.command(name="inspect")
@@ -119,3 +120,9 @@ def compare_command(reference, script, out, params, preview, tol, boolean_tol):
         emit(report)
     except Exception as exc:
         fail("compare", f"{type(exc).__name__}: {exc}")
+
+
+# Registered after `re` exists; the module imports the registry only (no kernel).
+from lamad.cli.detect import det  # noqa: E402
+
+re.add_command(det)
