@@ -30,6 +30,10 @@ def view(ref, port, tol, ang):
     """Serve a version in the browser. REF is a number, label, or STEP path."""
     # A path wins over a version lookup, so `lamad view parts/x.step` works
     # outside a project.
+    if ref and Path(ref).suffix.lower() == ".py":
+        fail("view", f"{ref} is a script, not a version or STEP file. "
+             "Use `lamad web SCRIPT` to view a script directly, or "
+             "`lamad run SCRIPT --label L` to record it as a version first.")
     if ref and Path(ref).suffix.lower() in (".step", ".stp"):
         if not Path(ref).exists():
             fail("view", f"{ref} not found.")
