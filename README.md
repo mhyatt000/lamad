@@ -67,6 +67,8 @@ lamad re compare part.step part.py --boolean-tol 1e-5   # OCCT fuzzy tolerance (
 lamad re compare vendor.step part.py --solids-only      # ignore cosmetic thread surfaces
 lamad re compare scan.stl part.py                       # mesh mode
 lamad re compare scan.stl part.py --tol 0.05 --ang 0.2 --samples 10000
+lamad re compare asm.step part.py --ref-part housing --part housing   # one part of each
+lamad re coverage vendor.step part.py --tol 0.05        # face checklist only -> part_coverage/
 ```
 
 Options: `--tol` is the tessellation linear deflection in mm (preview only in
@@ -74,8 +76,10 @@ solid mode; the reconstruction mesh itself in mesh mode), `--ang` the angular
 deflection in radians and `--samples` the surface samples per direction
 (mesh mode only), `--boolean-tol` the OCCT boolean tolerance (solid mode
 only; a warning on stderr says it is ignored for `.stl`), `--solids-only`
-drops the reference's free faces, shells, and wires (solid mode only), and
-`--no-preview` skips `comparison.png`.
+drops the reference's free faces, shells, and wires (solid mode only),
+`--coverage-tol` sets the face-coverage match tolerance (below) and
+`--no-coverage` skips that pass, `--ref-part` / `--part` pick parts (below),
+and `--no-preview` skips `comparison.png`.
 
 Solid mode wants closed solids on both sides. A reference that also carries
 free faces or shells (vendor STEPs often add cosmetic thread surfaces) is
@@ -96,6 +100,45 @@ other mesh, not a Hausdorff bound; both meshes are chordal approximations,
 so differences below roughly the STL's export deflection plus `--tol` are
 tessellation noise. Neither mode aligns or scales anything: both models are
 compared in their authored coordinates.
+
+### Face coverage
+
+Volumes say how much is wrong, not what. The `coverage` section of a solid
+mode report (and the whole of `lamad re coverage REFERENCE SCRIPT`, which
+runs the script and writes only `report.json` into `<stem>_coverage/`) turns
+the comparison into a checklist of faces. Every face of the reference is
+sampled on its trimmed surface (8 to 200 points by area, uniform in UV,
+holes and trimmed corners excluded) and each sample is measured to the
+closest point on the reconstruction's finely tessellated surface; the face is
+`matched` when the 95th percentile of those distances is within the
+tolerance (`--coverage-tol` for `compare`, `--tol` for `coverage`, 0.1 mm by
+default). The same is done for the reconstruction's faces against the
+reference. Per side the report gives `faces_total`, `matched`,
+`area_matched_fraction`, and `unmatched`: one entry per missed face with its
+id (`p1:f7`, as `re inspect` numbers it; reconstruction parts are numbered in
+`show_object` order), part name, surface type and analytic parameters
+(plane origin and normal, cylinder axis and radius, ...), area, centroid, and
+the sampled `distance.{mean, p95, max}`, sorted by area so the largest
+missing detail comes first. A forgotten chamfer therefore appears as one
+plane at 45 degrees with its area, and a recess floor as a plane 1 mm under
+the top, instead of as a volume. Faces on both sides must sit within the
+tolerance everywhere they are sampled: a reference face the script
+reproduces exactly is matched even when the script's own face is larger;
+that excess is reported on the reconstruction side. Mesh mode (`.stl`)
+covers the reconstruction's faces against the STL only, and distances there
+include the STL's chordal error.
+
+### Picking parts
+
+`--ref-part NAME` restricts the reference to the assembly part(s) whose name
+equals NAME or contains it case-insensitively, using the names `re inspect`
+reports; `--part NAME` does the same for the script's `show_object(...,
+name=...)` parts. Both are repeatable, apply to `compare` (either mode, though
+an `.stl` has no parts to pick) and `coverage`, and an unknown name fails
+with the available names listed. The report records what was compared under
+`reference.selected_parts` and `reconstruction.selected_parts` (`null` when
+everything was) next to `available_parts`; `reconstruction.step` holds only
+the selected parts.
 
 ## Feature detection
 
