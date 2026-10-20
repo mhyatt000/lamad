@@ -5,21 +5,10 @@ from unittest.mock import patch
 import numpy as np
 from build123d import Cylinder
 from OCP.BRepMesh import BRepMesh_IncrementalMesh
-
-try:
-    import trimesh
-except ImportError:  # the reverse-engineering extra is optional
-    raise unittest.SkipTest("requires trimesh (uv sync --extra reverse-engineering)")
+import trimesh
 
 from lamad.core.mesh_native import boundary_body
 from lamad.core.mesh_compare import body_mesh, compare_meshes
-
-try:  # trimesh's closest-point queries need the rtree extra as well
-    import rtree  # noqa: F401
-    HAS_RTREE = True
-except ImportError:
-    HAS_RTREE = False
-needs_rtree = unittest.skipUnless(HAS_RTREE, "requires rtree (uv sync --extra reverse-engineering)")
 
 
 class NativeBoundaryTests(unittest.TestCase):
@@ -37,7 +26,6 @@ class NativeBoundaryTests(unittest.TestCase):
             self.assertEqual(args[1:], (.002, False, .05, True))
             self.assertTrue(result.is_watertight)
 
-    @needs_rtree
     def test_sample_report_localizes_the_reported_maximum(self):
         source = trimesh.creation.box(extents=(10, 10, 10))
         shifted = source.copy()
@@ -59,7 +47,6 @@ class NativeBoundaryTests(unittest.TestCase):
         self.assertEqual(len(result.faces), len(source.faces))
         self.assertEqual(result.metadata["degenerate_triangles_removed"], 1)
 
-    @needs_rtree
     def test_native_solid_accepts_real_boolean_edits(self):
         source = trimesh.creation.box(extents=(10, 10, 10))
         data = {"components": [{"vertices": source.vertices.tolist(), "triangles": source.faces.tolist()}]}

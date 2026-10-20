@@ -10,6 +10,21 @@ from lamad.core.report_render import BG, BLUE, EXTRA, MISSING, VIEWS, camera, ra
 from lamad.core.viewer import tessellate
 
 
+def load_mesh(path):
+    """Load a mesh file (STL) as one Trimesh in its authored coordinates.
+
+    Multi-body files are concatenated; nothing is realigned, scaled, or repaired.
+    """
+    p = Path(path)
+    try:
+        loaded = trimesh.load(str(p), force="mesh")
+    except Exception as e:
+        raise ValueError(f"Could not parse {p.name} as a mesh: {e}") from e
+    if not isinstance(loaded, trimesh.Trimesh) or len(loaded.faces) == 0:
+        raise ValueError(f"{p.name} parsed but holds no triangles.")
+    return loaded
+
+
 def body_mesh(body, tolerance=0.05, angular_tolerance=0.3):
     """Mesh using absolute linear deflection in mm, angular deflection in radians.
 
@@ -33,8 +48,12 @@ def body_mesh(body, tolerance=0.05, angular_tolerance=0.3):
     return result
 
 
-def compare_meshes(reference, generated, samples=4000):
-    """Numerical report. Sampling is deterministic, not a Hausdorff certificate."""
+def compare_meshes(reference, generated, samples=4000, booleans=True):
+    """Numerical report. Sampling is deterministic, not a Hausdorff certificate.
+
+    `booleans=False` skips the manifold set-difference volumes and reports only
+    sampled surface distances, bounds, and per-mesh volumes.
+    """
     report = {"units": "mm", "reference_watertight": bool(reference.is_watertight),
               "generated_watertight": bool(generated.is_watertight),
               "reference_volume_mm3": float(reference.volume),
@@ -50,6 +69,8 @@ def compare_meshes(reference, generated, samples=4000):
                         "p95_mm": float(np.quantile(distances, 0.95)),
                         "max_sampled_point_mm": points[worst].tolist(),
                         "closest_point_mm": closest[worst].tolist()}
+    if not booleans:
+        return report
     if reference.is_volume and generated.is_volume:
         missing = trimesh.boolean.difference([reference, generated], engine="manifold")
         extra = trimesh.boolean.difference([generated, reference], engine="manifold")

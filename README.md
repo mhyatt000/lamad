@@ -32,9 +32,51 @@ wheels (2.2.x).
 
 ## Optional extras
 
+`trimesh` and `rtree` are core dependencies (they back `lamad re compare`
+with an STL reference). The `reverse-engineering` extra only adds `shapely`,
+which lamad itself does not import yet:
+
 ```bash
-uv sync --extra reverse-engineering   # trimesh, rtree, shapely
+uv sync --extra reverse-engineering   # shapely
 ```
+
+## Reverse engineering
+
+`lamad re inspect part.step` describes a STEP/BREP file (assembly tree,
+solids, analytic faces, adjacency) and writes labeled views; `lamad re
+compare REFERENCE SCRIPT` checks a trusted build123d script against a
+reference model. Both print one JSON object on stdout, progress on stderr,
+and a JSON error with exit 1 on failure. `compare` never overwrites: it
+writes a new `<script>_compare/` directory (or `--out DIR`), and `--param
+K=V` overrides a script's top-level literals exactly as `lamad run` does.
+
+The reference's extension picks the comparison mode, reported as `"mode"` in
+the JSON and in `report.json`:
+
+| Reference | Mode | Numbers | Outputs |
+|-----------|------|---------|---------|
+| `.step`, `.stp`, `.brep` | `solid` | OCCT booleans in authored coordinates: `difference.{missing_volume, extra_volume, intersection_over_union, ...}` plus per-side metrics | `report.json`, `comparison.png`, `reconstruction.step`, `script.py`, and `missing.step` / `extra.step` when those solids are non-empty |
+| `.stl` | `mesh` | Sampled surface distances between the STL and the tessellated script result: `distance_mm.{reference_to_reconstruction, reconstruction_to_reference}.{mean, p95, max}`, `samples_each_direction`, `bounds_mm`, and `volume_mm3` (watertight meshes only). No IoU or missing/extra volumes. | `report.json`, `comparison.png`, `reconstruction.stl`, `script.py` |
+
+```bash
+lamad re compare part.step part.py                      # solid mode
+lamad re compare part.step part.py --boolean-tol 1e-5   # OCCT fuzzy tolerance (solid only)
+lamad re compare scan.stl part.py                       # mesh mode
+lamad re compare scan.stl part.py --tol 0.05 --ang 0.2 --samples 10000
+```
+
+Options: `--tol` is the tessellation linear deflection in mm (preview only in
+solid mode; the reconstruction mesh itself in mesh mode), `--ang` the angular
+deflection in radians and `--samples` the surface samples per direction
+(mesh mode only), `--boolean-tol` the OCCT boolean tolerance (solid mode
+only; a warning on stderr says it is ignored for `.stl`), and
+`--no-preview` skips `comparison.png`.
+
+Mesh-mode distances are deterministic samples to the closest point on the
+other mesh, not a Hausdorff bound; both meshes are chordal approximations,
+so differences below roughly the STL's export deflection plus `--tol` are
+tessellation noise. Neither mode aligns or scales anything: both models are
+compared in their authored coordinates.
 
 ## Feature detection
 
