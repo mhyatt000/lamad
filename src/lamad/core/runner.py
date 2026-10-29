@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from OCP.BRep import BRep_Builder
-from OCP.TopAbs import TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
+from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID
 from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS_Compound, TopoDS_Shape
 
@@ -15,7 +15,7 @@ from OCP.TopoDS import TopoDS_Compound, TopoDS_Shape
 class Result:
     ok: bool
     shape: Any = None                      # TopoDS_Shape (the whole model)
-    parts: list = field(default_factory=list)   # [{name, color, shape}]
+    parts: list = field(default_factory=list)   # [{name, color, shape, leaves}]
     params: dict = field(default_factory=dict)
     error: str | None = None
     traceback: str | None = None
@@ -57,9 +57,46 @@ def _topods(obj):
 def _is_empty(shape):
     """True when a shape holds no geometry — what a boolean that removed
     everything returns. It is still a valid Shape, so it exports and measures
-    as a silent zero instead of failing."""
+    as a silent zero instead of failing. Edges count, so a BuildLine curve is
+    not empty."""
     return not any(TopExp_Explorer(shape, t).More()
-                   for t in (TopAbs_SOLID, TopAbs_SHELL, TopAbs_FACE))
+                   for t in (TopAbs_SOLID, TopAbs_SHELL, TopAbs_FACE, TopAbs_EDGE))
+
+
+def _rgb(color):
+    """A build123d Color as an (r, g, b) 0..1 triple, or None."""
+    return None if color is None else tuple(float(c) for c in tuple(color)[:3])
+
+
+def _leaves(obj, stem):
+    """[(labels, TopoDS_Shape, rgb)] for each leaf of a build123d assembly (a
+    Compound with children), placed in global coordinates. None for a plain
+    shape.
+
+    A child's shape is stored relative to its parent, so the parents'
+    locations are accumulated on the way down. An unlabeled child is named
+    after its parent (`stem` at the root) with a 1-based index; a color is
+    inherited downwards.
+    """
+    from OCP.TopLoc import TopLoc_Location
+
+    if not getattr(obj, "children", None):
+        return None
+    out = []
+
+    def walk(node, labels, loc, rgb):
+        rgb = _rgb(node.color) or rgb
+        if not node.children:
+            out.append((labels, node.wrapped.Moved(loc), rgb))
+            return
+        nxt = loc.Multiplied(node.wrapped.Location())
+        parent = labels[-1] if labels else stem
+        for i, kid in enumerate(node.children, 1):
+            label = str(kid.label or f"{parent}_{i}").replace("/", "_")
+            walk(kid, labels + (label,), nxt, rgb)
+
+    walk(obj, (), TopLoc_Location(), None)
+    return out
 
 
 def _compound(shapes):
@@ -116,8 +153,9 @@ def execute(source, params=None, filename="<script>"):
                 "A boolean removed everything - check that your cutter is not "
                 "larger than, or fully overlapping, the base solid."
             )
-        captured.append({"name": name or f"part{len(captured) + 1}",
-                         "color": color, "shape": topo})
+        name = name or f"part{len(captured) + 1}"
+        leaves = _leaves(obj, str(name).rsplit("/", 1)[-1])
+        captured.append({"name": name, "color": color, "shape": topo, "leaves": leaves})
 
     g = {"__name__": "__lamad__", "__file__": filename, "show_object": show_object}
     for attr in getattr(b3d, "__all__", dir(b3d)):

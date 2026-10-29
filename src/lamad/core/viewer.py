@@ -47,7 +47,9 @@ PALETTE = [
 
 
 def load_parts(path: Path):
-    """[(name, TopoDS_Shape)] for each leaf part, placed in global coordinates.
+    """[(path, TopoDS_Shape, rgb)] for each leaf part, placed in global
+    coordinates. `path` is the tuple of assembly names above the leaf, ending
+    in the leaf's own name.
 
     GetShape_s(label) places a component relative to its IMMEDIATE parent, so
     nested parts need TopLoc_Location accumulated down the tree. The document
@@ -100,17 +102,25 @@ def load_parts(path: Path):
         nm = name(label)
         return None if nm in GENERIC or nm.startswith("=>") else nm
 
-    def walk(label, loc, inherited_name=None, inherited_color=None):
+    def walk(label, loc, groups=(), inherited_name=None, inherited_color=None):
         kids = children(label)
         src = proto(label)
-        nm = real_name(label) or real_name(src) or inherited_name
+        own = real_name(label) or real_name(src)
+        nm = own or inherited_name
         rgb = color(label) or color(src) or inherited_color
         if not kids:
-            out.append((nm or "part", st.GetShape_s(label).Moved(loc), rgb))
+            # An unnamed leaf (geometry under a generic 'SOLID') stands in for
+            # the group it inherited its name from rather than nesting in it.
+            path = groups if not own and groups[-1:] == (nm,) else groups + (nm or "part",)
+            out.append((path, st.GetShape_s(label).Moved(loc), rgb))
             return
         nxt = loc.Multiplied(st.GetLocation_s(label)) if st.IsReference_s(label) else loc
+        # Only a named level becomes a group; unnamed wrappers are skipped, and
+        # an instance named like its parent (root assembly -> its single
+        # instance) does not nest a second time.
+        sub = groups + (own,) if own and groups[-1:] != (own,) else groups
         for kid in kids:
-            walk(kid, nxt, nm, rgb)
+            walk(kid, nxt, sub, nm, rgb)
 
     roots = Sequence_TDF_Label()
     st.GetFreeShapes(roots)
@@ -119,6 +129,18 @@ def load_parts(path: Path):
     if not out:
         raise SystemExit(f"no parts found in {path}")
     return doc, out
+
+
+def unique_paths(parts: list[dict]) -> list[dict]:
+    """Give each part a unique "name": its "path" segments joined by '/',
+    with '/' inside a segment replaced and repeats numbered. The name is the
+    part's viser scene node, so the path nests in the scene tree."""
+    seen, out = {}, []
+    for p in parts:
+        nm = "/".join(str(s).replace("/", "_") for s in p["path"])
+        seen[nm] = seen.get(nm, 0) + 1
+        out.append({**p, "name": nm if seen[nm] == 1 else f"{nm}_{seen[nm]}"})
+    return out
 
 
 def tessellate(shape, lin: float, ang: float):
@@ -167,6 +189,9 @@ class Scene:
 
     `parts` is a list of dicts with keys "name" (unique), "shape" (TopoDS_Shape)
     and "color" (0-255 RGB tuple, or None to pick from PALETTE by position).
+    A name with '/' nests: "stand/base/bolt" sits under group nodes "stand"
+    and "stand/base", so viser's own scene tree shows the hierarchy and
+    hiding a group hides everything under it.
     `load()` may be called again to swap the parts for new ones; the GUI and
     the camera framing are rebuilt from the new set.
     """
@@ -175,6 +200,7 @@ class Scene:
         self.server, self.title, self.tol, self.ang = server, title, tol, ang
         self.server.scene.set_up_direction("+z")
         self.handles: dict[str, viser.MeshHandle] = {}
+        self.groups: list = []
         self.gui_handles: list = []
         self.ctr = np.zeros(3)
         self.size = np.ones(3)
@@ -202,16 +228,22 @@ class Scene:
         client.camera.look_at = tuple(float(x) for x in c)
 
     def clear(self) -> None:
-        for h in self.handles.values():
+        # Children first: removing a group would cascade to its meshes.
+        for h in [*self.handles.values(), *reversed(self.groups), *self.gui_handles]:
             h.remove()
-        for h in self.gui_handles:
-            h.remove()
-        self.handles, self.gui_handles = {}, []
+        self.handles, self.groups, self.gui_handles = {}, [], []
 
     def load(self, parts: list[dict]) -> None:
         """Tessellate `parts`, add a mesh per part and rebuild the GUI."""
         self.clear()
         server, handles, meta, allv = self.server, self.handles, [], []
+        # Real (not implicit) group nodes, parents first, so every level of
+        # the hierarchy is a named, toggleable row in the scene tree.
+        names = {p["name"] for p in parts}
+        groups = sorted({"/".join(p["name"].split("/")[:k])
+                         for p in parts for k in range(1, p["name"].count("/") + 1)} - names,
+                        key=lambda g: g.count("/"))
+        self.groups = [server.scene.add_frame(f"/{g}", show_axes=False) for g in groups]
         for i, part in enumerate(parts):
             nm, shape = part["name"], part["shape"]
             v, f = tessellate(shape, self.tol, self.ang)
@@ -227,14 +259,6 @@ class Scene:
         pts = np.concatenate(allv)
         lo, hi = pts.min(axis=0), pts.max(axis=0)
         self.ctr, self.size = (lo + hi) / 2, hi - lo
-
-        with server.gui.add_folder("Parts") as parts_folder:
-            for nm, vol, _nsol, _ntri in meta:
-                cb = server.gui.add_checkbox(f"{nm} ({vol:.1f} cm3)", True)
-
-                @cb.on_update
-                def _(event, nm=nm):
-                    handles[nm].visible = event.target.value
 
         with server.gui.add_folder("Display") as display_folder:
             opacity = server.gui.add_slider("opacity", 0.1, 1.0, 0.05, 1.0)
@@ -265,7 +289,7 @@ class Scene:
             f"bbox `{size[0]:.1f} x {size[1]:.1f} x {size[2]:.1f}` mm\n\n"
             f"total `{sum(m[1] for m in meta):.1f}` cm3"
         )
-        self.gui_handles = [parts_folder, display_folder, stats]
+        self.gui_handles = [display_folder, stats]
         for client in server.get_clients().values():
             self.frame(client)
 
@@ -308,5 +332,5 @@ def serve(step: Path, tol: float = 0.05, ang: float = 0.3, port: int = 8080,
     step = Path(step)
     print(f"reading {step} ...", file=sys.stderr)
     _doc, loaded = load_parts(step)
-    parts = [{"name": nm, "shape": shape, "color": rgb} for nm, shape, rgb in loaded]
+    parts = unique_paths([{"path": p, "shape": shape, "color": rgb} for p, shape, rgb in loaded])
     return serve_parts(parts, step.name, tol=tol, ang=ang, port=port, block=block)

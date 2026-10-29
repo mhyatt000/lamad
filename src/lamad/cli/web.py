@@ -36,10 +36,27 @@ def assign_colors(parts, palette=None):
     return colors
 
 
+def expand(parts):
+    """One scene part per leaf, each with a `path` tuple for the viewer's
+    scene tree: the show_object() name split on '/', then the labels of any
+    build123d assembly children below it. A leaf without its own color takes
+    the show_object() one."""
+    out = []
+    for p in parts:
+        base = tuple(s for s in str(p["name"]).split("/") if s) or ("part",)
+        if p.get("leaves"):
+            out += [{"path": base + labels, "shape": shape,
+                     "color": rgb if rgb is not None else p.get("color")}
+                    for labels, shape, rgb in p["leaves"]]
+        else:
+            out.append({"path": base, "shape": p["shape"], "color": p.get("color")})
+    return out
+
+
 def split_solids(parts):
-    """A single part made of several solids becomes one part per solid, so a
-    script that calls show_object() once on a compound still gets distinct
-    colors and checkboxes. Multi-part results are left alone."""
+    """A single part made of several solids becomes a group with one child
+    per solid, so a script that calls show_object() once on a compound still
+    gets distinct colors and toggles. Multi-part results are left alone."""
     if len(parts) != 1:
         return list(parts)
     from OCP.TopAbs import TopAbs_SOLID
@@ -51,26 +68,18 @@ def split_solids(parts):
         exp.Next()
     if len(solids) < 2:
         return list(parts)
-    base = parts[0]["name"]
-    return [{"name": f"{base}_{i}", "shape": s, "color": parts[0].get("color")}
+    path = parts[0]["path"]
+    return [{"path": path + (f"{path[-1]}_{i}",), "shape": s, "color": parts[0].get("color")}
             for i, s in enumerate(solids, 1)]
 
 
-def unique_names(parts):
-    """Scene node paths are keyed by name, so repeats get a numeric suffix."""
-    seen, out = {}, []
-    for p in parts:
-        nm = str(p["name"]).replace("/", "_")
-        seen[nm] = seen.get(nm, 0) + 1
-        out.append({**p, "name": nm if seen[nm] == 1 else f"{nm}_{seen[nm]}"})
-    return out
-
-
 def prepare(parts):
-    """Scene-ready parts: split, uniquely named, every color a 0-255 tuple."""
+    """Scene-ready parts: one per leaf, uniquely named by scene path, every
+    color a 0-255 tuple."""
     from lamad.core.export import parse_color
+    from lamad.core.viewer import unique_paths
 
-    parts = unique_names(split_solids(parts))
+    parts = unique_paths(split_solids(expand(parts)))
     for p in parts:
         if p.get("color") is not None and parse_color(p["color"]) is None:
             note(f"unknown color {p['color']!r} for {p['name']}; using the palette")
@@ -97,7 +106,8 @@ def web(script, params, port, tol, ang, no_browser, watch):
     """Execute SCRIPT and serve its parts in the viewer. Blocks until ctrl-c.
 
     Nothing is written: no version, no STEP. Each show_object() part gets its
-    own color and visibility checkbox.
+    own color and a visibility toggle in the viewer's scene tree; build123d
+    assemblies (Compound children) and names like "base/bolt" nest there.
     """
     path = Path(script)
     if path.suffix.lower() != ".py":
