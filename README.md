@@ -163,12 +163,73 @@ Fillet, chamfer, hole, boss, and pattern recognition are planned, and STL
 current step/stl support table, generated from the same registry the commands
 use.
 
+## Rendering pictures
+
+`lamad render` runs a script and saves PNGs without recording a version.
+Both subcommands take `--param`, `--part NAME` (repeatable, matched like
+`re compare`), and `--out`; the default output sits next to the script and is
+numbered rather than overwritten, and an existing `--out` is refused.
+
+### Part views
+
+```bash
+lamad render part stand.py               # -> stand_render.png
+lamad render part stand.py --n 12 --size 300
+lamad render part stand.py --part lip --n 0   # just the first row
+```
+
+One sheet, three views wide. Row one is **top**, **side** (from +X, the
+right view) and **bottom**. Below it come `--n` (default 6) **home** views
+whose cameras are spread as far apart as possible: the smallest angle between
+any two cameras is maximised (6 gives an octahedron, every camera 90 deg from
+its nearest neighbour; 12 an icosahedron, 63.4 deg). Any rotation of such a set
+is equally spread, so it is turned to keep every camera well away from the
+axis views of row one. Each home view is labelled with its azimuth and
+elevation, and the JSON lists every camera's direction and up vector plus
+`home_min_angle_deg`. Parts keep their `show_object()` colors.
+
+### Sketches
+
+`lamad render sketch` draws planar parts as a flat 2D picture: filled faces
+with their holes, edges, a millimetre grid, and the drawn size.
+
+```python
+with BuildSketch() as plate:
+    RectangleRounded(60, 30, 4)
+    Circle(4, mode=Mode.SUBTRACT)
+show_object(plate.sketch, name="plate")      # a sketch or Face
+show_object(path.line, name="path")           # a BuildLine curve works too
+```
+
+```bash
+lamad render sketch plate.py             # -> plate_sketch.png
+lamad render sketch plate.py --part plate --size 1600 --no-grid
+```
+
+The plane is detected from the geometry. XY, XZ and YZ sketches keep global
+coordinates (the grid's darker lines are the axes) and report their offset;
+any other plane is drawn in its own axes. Solids, or parts on different
+planes, are an error; pick parts with `--part`.
+
 ## Web viewer
 
 `lamad web` runs a build123d script and serves the result in the browser
 viewer straight from memory: no project, no version, no STEP on disk. Each
 `show_object()` part gets its own color (the script's `color=` if given,
-otherwise the export palette) and a visibility checkbox.
+otherwise the export palette) and a row in the viewer's scene tree, whose
+visibility toggle hides the part and everything nested under it.
+
+Parts nest like a CAD assembly. A build123d `Compound(label=..., children=[...])`
+becomes a group with one row per child (unlabeled children are numbered after
+their parent), and a `/` in a name nests too:
+
+```python
+base = Compound(label="base", children=[slab, bolt])   # children carry .label
+show_object(Compound(children=[base, lid]), name="stand")  # stand/base/bolt, ...
+show_object(knob, name="extras/knob")                   # extras/knob
+```
+
+`lamad view` nests a STEP assembly the same way.
 
 ```bash
 lamad web examples/stand.py                      # opens http://localhost:8080

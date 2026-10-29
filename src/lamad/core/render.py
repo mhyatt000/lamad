@@ -34,6 +34,8 @@ VIEWS = {
     "iso": V3d_TypeOfOrientation_Zup_AxoRight,
 }
 PREVIEW_VIEWS = ["iso", "front", "right", "top"]
+# `lamad render part`: first row (label, view); "side" is the right view.
+ORTHO_ROW = [("top", "top"), ("side", "right"), ("bottom", "bottom")]
 
 
 def _scene(shape, parts, width, height):
@@ -78,14 +80,22 @@ def _scene(shape, parts, width, height):
 
 
 def render_views(shape, names, out_dir, parts=None, size=512):
-    """Render each named view to out_dir/<name>.png. Returns written paths."""
+    """Render each view to out_dir/<name>.png. Returns written paths.
+
+    A view is a VIEWS name, or (name, direction, up) for any camera: direction
+    points from the model towards the camera."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     scale = 2  # render big, downsample: cheap antialiasing
     view, _ctx = _scene(shape, parts, size * scale, size * scale)  # keep ctx alive
     written = []
     for name in names:
-        view.SetProj(VIEWS[name])
+        if isinstance(name, str):
+            view.SetProj(VIEWS[name])
+        else:   # (filename, direction towards the camera, up)
+            name, direction, up = name
+            view.SetProj(*map(float, direction))
+            view.SetUp(*map(float, up))
         view.FitAll(0.08)   # 8% margin, or the model touches the frame edge
         view.ZFitAll()
         view.Redraw()
@@ -102,25 +112,63 @@ def render_views(shape, names, out_dir, parts=None, size=512):
     return written
 
 
-def render_preview(shape, out_path, parts=None, size=400):
-    """Four labelled views in one 2x2 image — the 'look at what you built' shot."""
+def render_preview(shape, out_path, parts=None, size=400, views=None):
+    """Four labelled views in one 2x2 image — the 'look at what you built' shot.
+    `views` is [(label, view name)]; default PREVIEW_VIEWS under their own names."""
     from PIL import Image, ImageDraw
 
+    views = views or [(v, v) for v in PREVIEW_VIEWS]
     with tempfile.TemporaryDirectory() as tmp:
-        panels = render_views(shape, PREVIEW_VIEWS, tmp, parts=parts, size=size)
+        panels = render_views(shape, [v for _l, v in views], tmp, parts=parts, size=size)
         images = [Image.open(p).convert("RGB").copy() for p in panels]
 
     bar = 26
     sheet = Image.new("RGB", (size * 2, (size + bar) * 2), (245, 245, 245))
     draw = ImageDraw.Draw(sheet)
     for img, label, (x, y) in zip(
-        images, PREVIEW_VIEWS,
+        images, [label for label, _v in views],
         [(0, 0), (size, 0), (0, size + bar), (size, size + bar)],
     ):
         sheet.paste(img, (x, y + bar))
         draw.text((x + 8, y + 7), label, fill=(40, 40, 40))
     draw.line([(size, 0), (size, (size + bar) * 2)], fill=(210, 210, 210))
     draw.line([(0, size + bar), (size * 2, size + bar)], fill=(210, 210, 210))
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    sheet.save(str(out_path))
+    return out_path
+
+
+def render_sheet(shape, out_path, rows, parts=None, size=400, cols=3):
+    """Labelled views in a grid, `cols` wide; each entry of `rows` starts a new
+    row and wraps after `cols` views. A view is (label, spec), spec as in
+    `render_views`."""
+    from PIL import Image, ImageDraw
+
+    flat = [v for row in rows for v in row]
+    specs = [spec if isinstance(spec, str) else (f"v{i}", *spec)
+             for i, (_label, spec) in enumerate(flat)]
+    with tempfile.TemporaryDirectory() as tmp:
+        panels = render_views(shape, specs, tmp, parts=parts, size=size)
+        images = [Image.open(p).convert("RGB").copy() for p in panels]
+
+    bar, cells, k = 26, [], 0
+    for row in rows:
+        for start in range(0, len(row), cols):
+            cells.append(list(zip(images[k + start:k + start + cols],
+                                  [label for label, _s in row[start:start + cols]])))
+        k += len(row)
+    sheet = Image.new("RGB", (size * cols, (size + bar) * len(cells)), (245, 245, 245))
+    draw = ImageDraw.Draw(sheet)
+    for r, line in enumerate(cells):
+        y = r * (size + bar)
+        for c, (img, label) in enumerate(line):
+            sheet.paste(img, (c * size, y + bar))
+            draw.text((c * size + 8, y + 7), label, fill=(40, 40, 40))
+        if r:
+            draw.line([(0, y), (size * cols, y)], fill=(210, 210, 210))
+    for c in range(1, cols):
+        draw.line([(c * size, 0), (c * size, sheet.height)], fill=(210, 210, 210))
 
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     sheet.save(str(out_path))

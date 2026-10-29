@@ -47,7 +47,8 @@ class HelpGroup(click.Group):
     """A group that prints its help and exits 0 when invoked bare.
 
     click >= 8.2 treats a bare group invocation as a usage error (exit 2);
-    `lamad`, `lamad versions`, and `lamad re` should list subcommands instead.
+    `lamad`, `lamad versions`, `lamad re`, and `lamad render` should list
+    subcommands instead.
     """
 
     def parse_args(self, ctx, args):
@@ -65,13 +66,14 @@ def cli():
 
 # Subcommand modules import emit/fail/note from this module, so they are
 # registered after the helpers above exist.
-from lamad.cli import geom, project, reverse, web  # noqa: E402
+from lamad.cli import geom, project, render, reverse, web  # noqa: E402
 
 cli.add_command(project.init)
 cli.add_command(project.run)
 cli.add_command(project.versions)
 cli.add_command(geom.view)
 cli.add_command(web.web)
+cli.add_command(render.render)
 cli.add_command(geom.measure)
 cli.add_command(geom.export)
 cli.add_command(reverse.re)
