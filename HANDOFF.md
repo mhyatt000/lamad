@@ -93,13 +93,10 @@ examples/stand.py      three named, coloured parts
 ## Verification routine
 
 ```bash
-uv run python -m unittest discover -s tests -v     # 85 tests, 0 failures, 20 skips
+uv run python -m unittest discover -s tests -v     # 0 failures, 0 skips
 uv run python -c "import sys, lamad.cli; print('torch' in sys.modules)"  # False
 ~/.local/bin/lamad                                  # lists all commands, exit 0
 ```
-
-The 20 skips are ORCA project tests that import modules from
-`../mycad/projects/orca-v1`, which is not shipped. Leave them skipped.
 
 New fixtures: build the shape with build123d, export with
 `lamad.core.export.export_step` / `export_stl` into a temp dir, assert on
